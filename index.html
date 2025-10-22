@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shares Outstanding - Loading...</title>
+<style>
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #f5f7fa;
+    color: #333;
+    max-width: 700px;
+    margin: 2rem auto;
+    padding: 1rem 2rem;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    border-radius: 8px;
+  }
+  h1 {
+    color: #004080;
+    font-weight: 700;
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+  }
+  .data-section {
+    background: white;
+    border-radius: 6px;
+    padding: 1rem 1.5rem;
+    margin-top: 1rem;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  }
+  dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.5rem 1rem;
+    align-items: center;
+  }
+  dt {
+    font-weight: 600;
+    color: #555;
+  }
+  dd {
+    margin: 0;
+    font-size: 1.1rem;
+    color: #222;
+  }
+  .highlight {
+    color: #007acc;
+    font-weight: 700;
+  }
+  footer {
+    margin-top: 3rem;
+    font-size: 0.9rem;
+    color: #888;
+    text-align: center;
+  }
+  .error {
+    background: #ffdddd;
+    border: 1px solid #ff6f6f;
+    color: #900;
+    padding: 1rem 1.5rem;
+    border-radius: 6px;
+    margin-top: 1rem;
+  }
+  @media (max-width: 480px) {
+    body {
+      margin: 1rem;
+      padding: 1rem;
+      box-shadow: none;
+    }
+  }
+</style>
+</head>
+<body>
+  <h1 id="share-entity-name">Loading...</h1>
+  <section class="data-section" aria-label="Shares Outstanding Data">
+    <dl>
+      <dt>Maximum Shares Outstanding:</dt>
+      <dd id="share-max-value" class="highlight">–</dd>
+      <dt>Fiscal Year (Max):</dt>
+      <dd id="share-max-fy">–</dd>
+      <dt>Minimum Shares Outstanding:</dt>
+      <dd id="share-min-value" class="highlight">–</dd>
+      <dt>Fiscal Year (Min):</dt>
+      <dd id="share-min-fy">–</dd>
+    </dl>
+  </section>
+  <div id="error-message" class="error" style="display:none;"></div>
+  <footer>Data sourced from SEC EDGAR API (Live)</footer>
+
+<script>
+  // Constants
+  const DEFAULT_CIK = '0001551152';
+  const API_BASE = 'https://data.sec.gov/api/xbrl/companyconcept/CIK';
+  const CONCEPT = 'dei/EntityCommonStockSharesOutstanding.json';
+  // Proxy for CORS (using AllOrigins free proxy)
+  const PROXY_PREFIX = 'https://api.allorigins.win/get?url=';
+  
+  // User-Agent header is needed for real SEC API calls, but browsers can't set it.
+  // So for default AbbVie data we fetch direct JSON (cross-origin allowed),
+  // but for other CIKs we fetch through proxy to avoid CORS.
+  
+  function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  function displayError(msg) {
+    const errDiv = document.getElementById('error-message');
+    errDiv.style.display = 'block';
+    errDiv.textContent = msg;
+  }
+
+  function clearError() {
+    const errDiv = document.getElementById('error-message');
+    errDiv.style.display = 'none';
+    errDiv.textContent = '';
+  }
+
+  async function fetchDataForCIK(cik) {
+    const cik_padded = cik.padStart(10, '0');
+    const url = `${API_BASE}${cik_padded}/${CONCEPT}`;
+
+    if (cik_padded === DEFAULT_CIK) {
+      // Direct fetch for AbbVie
+      try {
+        clearError();
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.json();
+      } catch (e) {
+        displayError(`Failed to load data for CIK ${cik_padded}: ${e.message}`);
+        return null;
+      }
+    } else {
+      // Fetch through Proxy to handle CORS
+      try {
+        clearError();
+        const encodedUrl = encodeURIComponent(url);
+        const proxyUrl = PROXY_PREFIX + encodedUrl;
+
+        const resp = await fetch(proxyUrl);
+        if (!resp.ok) throw new Error(`Proxy HTTP ${resp.status}`);
+        const proxyData = await resp.json();
+
+        // AllOrigins returns shape: { contents: "actual data as string" }
+        const jsonText = proxyData.contents;
+        return JSON.parse(jsonText);
+      } catch (e) {
+        displayError(`Failed to load data for CIK ${cik_padded} via proxy: ${e.message}`);
+        return null;
+      }
+    }
+  }
+
+  function processRawData(obj) {
+    if (!obj || typeof obj !== 'object') {
+      throw new Error('Invalid data format');
+    }
+
+    const entityName = obj.entityName || 'Unknown Entity';
+    const units = obj.units || {};
+    const shares = units.shares || [];
+
+    const filtered = shares.filter(entry => {
+      return entry.fy && entry.fy > '2020' && typeof entry.val === 'number' && !isNaN(entry.val);
+    });
+
+    if (filtered.length === 0) {
+      throw new Error('No shares outstanding data found for fiscal years > 2020.');
+    }
+
+    const maxEntry = filtered.reduce((max, curr) => (curr.val > max.val ? curr : max), filtered[0]);
+    const minEntry = filtered.reduce((min, curr) => (curr.val < min.val ? curr : min), filtered[0]);
+
+    return {
+      entityName: entityName,
+      max: { val: maxEntry.val, fy: maxEntry.fy },
+      min: { val: minEntry.val, fy: minEntry.fy }
+    };
+  }
+
+  function updatePage(data) {
+    if (!data) return;
+    document.title = `Shares Outstanding - ${data.entityName}`;
+
+    setText('share-entity-name', data.entityName);
+    setText('share-max-value', data.max.val.toLocaleString());
+    setText('share-max-fy', data.max.fy);
+    setText('share-min-value', data.min.val.toLocaleString());
+    setText('share-min-fy', data.min.fy);
+  }
+
+  function getCIKFromURL() {
+    const urlParams = new URLSearchParams(window.location.search);
+    let cik = urlParams.get('CIK') || DEFAULT_CIK;
+    if (!/^\d{10}$/.test(cik)) {
+      // Support 8-digit or less numeric CIKs, pad them
+      cik = cik.replace(/^0+/, '');
+      if (/^\d{1,10}$/.test(cik)) {
+        cik = cik.padStart(10, '0');
+      } else {
+        cik = DEFAULT_CIK;
+      }
+    }
+    return cik;
+  }
+
+  async function loadAndRender() {
+    const cik = getCIKFromURL();
+    const rawData = await fetchDataForCIK(cik);
+    if (!rawData) return;
+
+    let processed;
+    try {
+      processed = processRawData(rawData);
+    } catch (e) {
+      displayError(`Data processing error: ${e.message}`);
+      return;
+    }
+
+    updatePage(processed);
+  }
+
+  // On DOM ready
+  document.addEventListener('DOMContentLoaded', () => {
+    loadAndRender();
+  });
+</script>
+
+</body>
+</html>
